@@ -1,0 +1,2 @@
+- g/subdir2
+Total files: 0

@@ -1,0 +1,2 @@
+f.txt x: 0, k: 2
+g.txt x: 0, k: 1

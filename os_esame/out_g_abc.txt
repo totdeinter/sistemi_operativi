@@ -1,0 +1,7 @@
++ g
++ g/subdir1
++ g/subdir1/subdir1-1
+- g/subdir2
+- g/subdir3
++ g/subdir4
+Total files: 5

@@ -1,0 +1,3 @@
++ g/subdir1
++ g/subdir1/subdir1-1
+Total files: 3
