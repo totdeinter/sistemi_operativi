@@ -65,4 +65,4 @@ for D in "${!DIR_OK[@]}"; do
 done
 
 #stampa i file totali trovati
-echo "Total files: $CONT-1"
+echo "Total files: $CONT"

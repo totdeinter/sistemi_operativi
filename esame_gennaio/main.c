@@ -9,9 +9,8 @@
 
 //struct per salvare i campi da stampare
 typedef struct{
-    char c_ass; //carattere i-esimo associato al figlio i-esimo
+    int* occ_c; //array di interi con le occorrenze di ogni carattere trovate nel file i-esimo
     pid_t pid; //pid del figlio
-    long occ; //numero occorrenze del carattere trovate
 } Risultato;
 
 typedef int pipe_t[2]; //lati scrittura/lettura per ogni singola pipe
@@ -20,17 +19,17 @@ typedef int pipe_t[2]; //lati scrittura/lettura per ogni singola pipe
 int calcolaOcc(const char *filename, const char car){
     //apro il file associato
     int fd = open(filename, O_RDONLY);
-    char c = ' ';
+    char cLetto;
     int occ = 0;
     if(fd < 0){ //errore apertura file
         fprintf(stderr, "Figlio %d: Errore nell'apertura del file %s: %s\n", getpid(), filename, strerror(errno));
         close(fd);
-        return -1;
+        return -1; //ritorniamo -1 in caso di errore
     }
 
     //calcoliamo il numero di occorrenze del carattere
-    while(read(fd, &c, 1) > 0){
-        if(c == car) occ++;
+    while(read(fd, &cLetto, 1) > 0){
+        if(cLetto == car) occ++;
     }
     close(fd);
 
@@ -51,6 +50,7 @@ void codiceFiglio(const char *filename, const char *s, const int L, int write_fd
         v[i] = calcolaOcc(filename, s[i]);
         if(v[i] == -1){
             //errore lettura da file associato del carattere i
+            close(write_fd);
             exit(255);
         }
     }
@@ -58,7 +58,7 @@ void codiceFiglio(const char *filename, const char *s, const int L, int write_fd
     //abbiamo contato le occorrenze di tutti i caratteri della stringa s
     //ora dobbiamo scrivere su pipe
     size_t dim = L * sizeof(int);
-    if(write(write_fd, v, sizeof(dim)) != sizeof(dim)){ //errore scrittura su pipe
+    if(write(write_fd, v, dim) != dim){ //errore scrittura su pipe
         fprintf(stderr, "Errore: figlio con pid %d non è riuscito a scrivere su pipe: %s\n", getpid(), strerror(errno));
         close(write_fd);
         exit(255);
@@ -78,7 +78,7 @@ int main(int argc, char **argv){
     }
 
     //controllo tipo dei parametri
-    //controllo nome del file non sia vuoto
+    //controllo la stringa passata come primo parametro non sia vuota
     if(strlen(argv[1]) == 0){
         fprintf(stderr, "Errore: la stringa '%s' è vuota\n", argv[1]);
         return EXIT_FAILURE;
@@ -86,30 +86,30 @@ int main(int argc, char **argv){
 
     //controllo nomi di file
     const char *stringa = argv[1];
-    int L = strlen(argv[1]); // lunghezza dei caratteri
+    int L = strlen(argv[1]); //numero di caratteri di cui si dovraanno contare le occorrenze
     int N = argc-2; //num processi figli da creare
 
     //controllo nomi di file non siano vuoti
     for(int i = 2; i < argc; i++){
-        if(strlen(argv[1]) == 0){
+        if(strlen(argv[i]) == 0){
             fprintf(stderr, "Errore: Il parametro in pos '%d' è vuoto '%s'\n", i, argv[i]);
             return EXIT_FAILURE;
         }
     }
     //controllo param completato
 
-    //creazione array per i pid dei figli
-    pid_t *pidFigli = (pid_t *) malloc(N * sizeof(pid_t));
-    if(pidFigli == NULL){
-        perror("Errore allocazione memoria pidFigli");
+    //creazione array di struct Risultato
+    Risultato* ris = calloc(N, sizeof(Risultato));
+    if(ris == NULL){
+        perror("Errore allocazione memoria pipes");
         return EXIT_FAILURE;
     }
 
     //creazione array di pipes
-    pipe_t *pipes = malloc(N * sizeof(pipe_t));
+    pipe_t *pipes = calloc(N, sizeof(pipe_t));
     if(pipes == NULL){
         perror("Errore allocazione memoria pipes");
-        free(pidFigli);
+        free(ris);
         return EXIT_FAILURE;
     }
 
@@ -123,8 +123,8 @@ int main(int argc, char **argv){
                 close(pipes[k][0]);
                 close(pipes[k][1]);
             }
-            free(pidFigli);
             free(pipes);
+            free(ris);
             return EXIT_FAILURE;
         }
 
@@ -137,8 +137,8 @@ int main(int argc, char **argv){
             //chiudiamo tutte le pipe in lettura dei figli precedenti
             for(int k = 0; k < i; k++)
                 close(pipes[k][0]); //lasciamo aperto in scrittura
-            free(pidFigli);
             free(pipes);
+            free(ris);
             return EXIT_FAILURE;
         }
 
@@ -148,10 +148,9 @@ int main(int argc, char **argv){
             //per ogni figlio lascio aperto solo il lato di scrittura pipes[i][1]
 
             //chiusura pipe inutilizzate
-            //close(pipes[i][0]);
-            for(int j = 0; j <N; j++){ //chiusura lati scrittura altri figli
+            for(int j = 0; j <N; j++){
                 close(pipes[j][0]);
-                if(j != i) close(pipes[j][1]);
+                if(j != i) close(pipes[j][1]); //chiusura lati scrittura altri figli
             }
 
             const char *filename = argv[i + 2];
@@ -160,60 +159,74 @@ int main(int argc, char **argv){
 
         }else{ //sono nel padre
             //salviamo il pid del figlio
-            pidFigli[i] = pid;
+            ris[i].pid=pid;
             //chiusura pipe inutilizzate
             close(pipes[i][1]); //il padre non scrive mai
         }
     }
 
     //codice del padre
-    int errore = 0;
+    int errore = 0; //errore a livello globale nel programma
+
+    //array che contiene il codice di errore per ogni figlio (se 0 ok, altrimenti errore)
+    int* err = calloc(N, sizeof(int));
 
     //creiamo la struttura che il padre leggerà dai figli
-    int *arr_letto_da_pipe = (int *) malloc(N * sizeof(int));
+    int *arr_letto_da_pipe = (int *) malloc(L * sizeof(int));
 
     for(int i = 0; i < N; i++){
 
         //leggo dalla pipe, controllando il numero di byte letti
         //mi aspetto di leggere un array di L interi
-        ssize_t n = read(pipes[i][0], arr_letto_da_pipe, sizeof(L * sizeof(int)));
-        if(n != sizeof(L * sizeof(int))){ //errore nella lettura
+        ssize_t n = read(pipes[i][0], arr_letto_da_pipe, L * sizeof(int));
+        if(n != L * sizeof(int)){ //errore nella lettura
             if (n >= 0){ //errore di comunicazione
-                errore = -1;
+                err[i] = -1;
             }else{ //errore di sistema
                 perror("Errore lettura da pipe");
-                errore = -2;
+                err[i] = -2;
             }
+        }else{
+            //ris[i].occ_c = arr_letto_da_pipe; NO!!
+            ris[i].occ_c = calloc(L, sizeof(int));
+            memcpy(ris[i].occ_c, arr_letto_da_pipe, L * sizeof(int));
         }
         //chiudo il lato di lettura della pipe
         close(pipes[i][0]);
 
         //aspettiamo i figli
         int status;
-        if(waitpid(pidFigli[i], &status, 0) == -1){
+        if(waitpid(ris[i].pid, &status, 0) == -1){
             perror("Errore in waitpid");
-        }else if(!WIFEXITED(status) || WEXITSTATUS(status) != EXIT_SUCCESS || errore != 0){
+        }else if(!WIFEXITED(status) || WEXITSTATUS(status) == 255 || err[i] != 0){
             //Terminazione anomala del figlio
-            if(errore != -1) errore=-3;
+            if(err[i] != -1) err[i]=-3;
+            errore = 1;
         }
     }
 
     //stampa dei risultati
     for(int i = 0; i < N; i++){
-        if(errore != 0){//errore
-            printf("%s %d Error\n", argv[i + 2], pidFigli[i]);
+        if(err[i] != 0){//errore nel figlio i-esimo
+            printf("%s %d Error\n", argv[i + 2], ris[i].pid);
+            errore=1; //segnaliamo c'e' stato un errore nel programma (in uno dei figli)
             //break;
         }else{
-            printf("%s %d ", argv[i + 2], pidFigli[i]);
+            printf("%s %d ", argv[i + 2], ris[i].pid);
             for(int j = 0; j < L; j++){ //stampo i caratteri
-                printf("%c: %d ", stringa[j], arr_letto_da_pipe[j]);
+                if(j == L-1) printf("%c: %d", stringa[j], ris[i].occ_c[j]);
+                else printf("%c: %d, ", stringa[j], ris[i].occ_c[j]);
             }
             printf("\n");
         }
     }
 
     free(arr_letto_da_pipe); //libero la memoria
+    for(int i = 0; i < N; i++)
+        free(ris[i].occ_c);
+    free(ris);
     free(pipes);
-    free(pidFigli);
+    free(err);
+
     return errore == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
